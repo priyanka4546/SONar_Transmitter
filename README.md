@@ -1,95 +1,302 @@
-# Adaptive SDR Sonar Transmitter Payload
+# Low-Power Adaptive Sonar Transmitter Payload for AUVs
 
-**SIH260580** : a software-defined sonar transmitter that adapts its transmission frequency, pulse duration, and amplitude to simulated environmental conditions (depth, turbidity, salinity), built on an STM32F411 Blackpill.
+**Smart India Hackathon 2026 — Problem Statement ID: 26058**  
+**Theme:** Robotics and Drones  
+**Category:** Hardware  
+**Team:** team blub blub  
+**Team ID:** 182517
 
-## Overview
+## 📌 Project Overview
 
-This firmware generates a Hann-windowed Linear Frequency Modulated (LFM) chirp and streams it to an MCP4921 DAC. Rather than fixed transmission parameters, three potentiometers simulate environmental sensors, and an onboard propagation model - including a real sound-speed-in-seawater calculation - computes the frequency, pulse duration, and amplitude best suited to those conditions in real time.
+This project is a prototype for a **low-power, real-time adaptive sonar payload for Autonomous Underwater Vehicles (AUVs)**.
 
-**Current status:** functional prototype operating in the 2–18 kHz range. This is *not yet* the final 100–500 kHz sonar transmitter the problem statement targets.
+The system uses an **nRF52840-DK** as the main embedded controller and collects underwater acoustic and power-related telemetry. The current prototype measures the **echo time-of-flight (ToF)** from a JSN-SR04T ultrasonic sensor, estimates underwater sound speed from temperature, calculates target range, and monitors bus voltage/current/power using an INA219.
 
-## Hardware
+The project is based on the Smart India Hackathon 2026 problem statement:
 
-| Component | Notes |
+> **“Development of a Low power, Real-time Adaptive Software-Defined Sonar Transmitter Payload for Autonomous Underwater Vehicles (AUVs)”**
+
+## 🎯 Objectives
+
+- Measure ultrasonic echo time-of-flight in real time.
+- Estimate underwater sound speed using water temperature.
+- Calculate target range from acoustic ToF.
+- Monitor electrical power parameters.
+- Provide continuous telemetry through the Zephyr console.
+- Develop a low-power embedded platform suitable for an AUV sonar payload.
+- Provide a foundation for future adaptive sonar waveform generation and closed-loop environmental adaptation.
+
+## 🧩 Hardware Used
+
+| Component | Purpose |
 |---|---|
-| STM32F411CEU6 "Blackpill" | The specific board used is a clone/non-genuine part |
-| MCP4921 | 12-bit SPI DAC, unbuffered mode |
-| LM358 | Op-amp stage after the DAC. Not rail-to-rail, limited slew rate  |
-| 3× linear-taper potentiometer | Simulate depth / turbidity / salinity sensors |
-| ST-Link V2 (clone) | Flashing via SWD |
-| ESP32-C3 Super Mini | Companion board - reads the analog output via its own ADC for live visualization, since no oscilloscope is available yet |
+| **Nordic Semiconductor nRF52840-DK v3.0.3** | Main embedded controller |
+| **JSN-SR04T waterproof ultrasonic transducer** | Underwater ultrasonic sensing |
+| **JSN-SR04T driver board** | Interface/driver for the ultrasonic transducer |
+| **INA219 current/power sensor** | Bus voltage and power monitoring |
+| **DS18B20 waterproof temperature sensor** | Water temperature measurement |
+| **MP1584 buck converter** | DC-DC voltage regulation |
+| **3S Li-ion/LiPo battery (11.1–12.6 V)** | Prototype power source |
+| **Zero PCB / perfboard** | Hardware interconnection |
 
-## Pinout
+## 🔌 Current GPIO / Interface Mapping
 
-| Signal | Pin |
-|---|---|
-| MCP4921 CS | PB12 |
-| MCP4921 SCK | PB13 (SPI2_SCK) |
-| MCP4921 SDI | PB15 (SPI2_MOSI) |
-| MCP4921 LDAC | GND (tied low in hardware, not firmware-controlled) |
-| Pot 1 - depth | PA1 (ADC1_IN1) |
-| Pot 2 - turbidity | PA2 (ADC1_IN2) |
-| Pot 3 - salinity | PA3 (ADC1_IN3) |
-| ST-Link SWDIO | PA13 |
-| ST-Link SWCLK | PA14 |
+The current Zephyr application uses:
 
-## Architecture & Key Decisions
+| Signal | nRF52840 pin | Function |
+|---|---:|---|
+| TRIG | P0.13 | Trigger pulse for JSN-SR04T |
+| ECHO | P0.14 | Echo input through a safe level/interface |
+| I2C | `i2c0` | INA219 communication |
+| INA219 address | `0x40` | Default INA219 I2C address |
 
-A few choices in this codebase look non-obvious out of context. They're documented here because each one cost real debugging time to find.
+> **Important:** Verify the actual nRF52840-DK header mapping and the JSN-SR04T electrical interface before connecting hardware. The ECHO signal must be within the nRF52840 GPIO voltage limits.
 
-**SPI2, not SPI1.** Isolated bisection testing found that initializing SPI1 at all - even a bare `SPI.begin()` with no transaction and no actual transfer - breaks USB CDC on this specific board. SPI2 on different pins (PB12/13/14/15) does not have this problem. This appears to be board-specific, not a general STM32F411 issue.
+## ⚙️ Software
 
-**ST-Link/SWD, not USB DFU.** DFU flashing was unreliable on this clone board (intermittent enumeration failures, consistent with documented crystal-calibration timing sensitivity on cheap Blackpill clones). SWD via a cheap ST-Link sidesteps the USB bootloader entirely and has been reliable since switching.
+The firmware is written in **C using Zephyr RTOS**.
 
-**LDAC tied to GND in hardware**, not toggled by firmware. MCP4921 latches its output on the rising edge of CS when LDAC is held low, so no separate LDAC control is needed - this removes GPIO toggles from the sample-rate-critical ISR.
+### Main software functions
 
-**Direct BSRR register writes for CS**, not `digitalWrite()`. At a 200 kHz sample rate, `digitalWrite()`'s pin-lookup overhead was a meaningful fraction of the available 5 µs budget per sample. `GPIOB->BSRR` writes are a single instruction.
+1. Configure GPIO for the ultrasonic trigger and echo.
+2. Generate a short trigger pulse.
+3. Measure the duration of the ultrasonic ECHO pulse.
+4. Calculate underwater sound speed from temperature.
+5. Calculate distance from acoustic time-of-flight.
+6. Read INA219 bus voltage over I2C.
+7. Calculate/report power telemetry.
+8. Print telemetry continuously through the Zephyr console.
 
-**`SPI.beginTransaction()` called once in `setup()`**, not per sample. This DAC is the only device on the bus, so the per-transfer overhead of repeatedly opening/closing a transaction was unnecessary and was cut from the ISR.
+## 📐 Working Principle
 
-**Timer paused during buffer regeneration.** `sampleTimer->pause()` / `resume()` brackets the call to `generateChirp()` in `loop()`. Without this, the ISR could read `chirpBuffer` while it was mid-rewrite, producing a torn, glitched pulse.
+### 1. Ultrasonic Trigger
 
-**2–18 kHz operating range, not 100–500 kHz.** This is a deliberate prototyping choice, not a bug: it keeps the signal within reach of `analogRead()`-based measurement on the ESP32-C3 companion board (no dedicated ADC hardware needed to verify it's working), and it's audible, which makes bring-up easier. It is a known, explicit gap against the problem statement's target frequency range - see below.
+The nRF52840 generates a trigger pulse on **P0.13**.
 
-## How the Adaptive Algorithm Works
+The JSN-SR04T sends an ultrasonic pulse and produces an ECHO signal.
 
-Each potentiometer simulates an environmental sensor rather than directly setting a wave parameter:
+### 2. Echo Time-of-Flight
 
-1. **Depth** (0–100 m), **turbidity** (0–100%), and **salinity** (0–40 PSU) are read from the three pots.
-2. **Speed of sound** is computed from temperature (currently a fixed assumed value), salinity, and depth using the Mackenzie (1981) approximation for sound speed in seawater.
-3. A **propagation difficulty score** (0–1) is computed as a weighted combination: turbidity dominates (0.55), depth is secondary (0.35), and salinity contributes as its *deviation from 35 PSU* - the salinity of average seawater - rather than a straight linear scale, since both unusually fresh and unusually saline water are atypical conditions, not just "more salt is worse."
-4. That difficulty score drives three outputs:
-   - **Frequency** interpolates between an easy-conditions band (14–18 kHz, best resolution) and a hard-conditions band (2–6 kHz, best penetration).
-   - **Duration** interpolates between 0.5 ms (easy) and 2.5 ms (hard) - more total transmitted energy for harder conditions.
-   - **Amplitude** interpolates between 0.55 and 0.90 - more signal power to overcome attenuation.
+The firmware waits for ECHO to become HIGH and measures how long it remains HIGH.
 
-This directly implements the problem statement's "Environmental Sensor Interface & Adaptation Logic" requirement.
+The measured duration is stored as:
 
-## Build & Flash
+```text
+ToF (µs)
+```
 
-**Arduino IDE settings:**
-- Board: `Generic STM32F4 series`
-- Board part number: `BlackPill F411CE`
-- USB support: `CDC (generic Serial supersede U(S)ART)`
-- Upload method: `STM32CubeProgrammer (SWD)`
+A timeout of **60 ms** is currently used to prevent the firmware from waiting indefinitely.
 
-**Wiring:** connect an ST-Link V2 to SWDIO (PA13), SWCLK (PA14), and GND. Leave the Blackpill's own USB cable connected too - it's needed separately for the USB CDC Serial connection, since SWD and USB are independent interfaces. Then flash normally via the IDE's Upload button.
+### 3. Temperature-Based Sound Speed
 
-## Testing / Verification
+The current code uses the following empirical relationship:
 
-No oscilloscope or spectrum analyzer is available yet for direct signal validation, so an ESP32-C3 Super Mini is used as a stand-in: its own ADC samples the op-amp's output, and results stream to Arduino IDE's Serial Plotter for a live graph.
+```text
+c = 1449.2 + 4.6T - 0.055T²
+```
 
-**Important caveat:** this setup can only reliably show the millisecond-scale amplitude *envelope* of each pulse (rise and fall shape, tracking duration and amplitude), not the actual frequency content, which oscillates far faster than simple ADC polling can resolve. It is not a substitute for a real oscilloscope, only a rough sanity check that pulses are firing with plausible timing and amplitude.
+where:
 
-**Setup notes:**
-- ESP32-C3 requires **Tools → USB CDC On Boot → Enabled** for Serial to work at all over its native USB connection - without it, Serial silently routes to unused UART pins instead.
-- A shared ground between the STM32 board and the ESP32-C3 is required for any ADC reading to be meaningful.
-- Depending on the op-amp's actual output swing, a voltage divider may be needed before the ESP32-C3's ADC input (max 3.3V, not 5V-tolerant) - verify the op-amp's real output range with a multimeter before connecting it directly.
+- `c` = estimated sound speed in m/s
+- `T` = water temperature in °C
 
-## Known Limitations & Next Steps
+### 4. Range Calculation
 
-- **Not yet DMA-driven.** The problem statement explicitly requires DMA + hardware timers "without stalling the CPU." The current implementation is CPU/interrupt-driven (a timer ISR calling `SPI.transfer16()` per sample), which works but doesn't meet this requirement as written. A DMA-based rewrite (timer-paced DMA into `SPI1->DR`, with the peripheral hardware - not firmware - generating chip-select framing) is the outstanding piece of work here.
-- **2–18 kHz, not 100–500 kHz.** The current range is a deliberate prototyping choice (see above), not the problem statement's target sonar frequency range. Moving to the real range needs the DMA rewrite above, since CPU-driven SPI writes were found not to coexist with USB CDC at the sample rates the real frequency range would require.
-- **LM358 has real limitations at higher frequencies.** Its slew rate (~0.3 V/µs) puts it right at its own performance limit near the top of even the current reduced frequency range - a faster op-amp (e.g. TL072) would remove this ceiling, though it needs a higher supply voltage (5V) to have adequate headroom on both rails.
-- **No real oscilloscope/spectrum analyzer validation yet.** The problem statement's judging criteria call for a clean FFT spectrogram at the judging table - this hasn't been directly verified, only approximated via the ESP32-C3 envelope check described above.
-- **Water temperature is currently a fixed assumed constant**, not sensor-driven - a fourth sensor input would complete the environmental model.
+For a round-trip acoustic measurement:
+
+```text
+Distance = (ToF × Sound Speed) / 2
+```
+
+The code converts the result to centimetres:
+
+```text
+distance_cm = (ToF × sound_speed) / 20000
+```
+
+### 5. Power Monitoring
+
+The INA219 is accessed over I2C.
+
+The firmware reads the bus-voltage register and calculates/report power telemetry.
+
+The console output contains:
+
+```text
+Time(ms)
+Temperature(°C)
+Sound Speed(m/s)
+ToF(µs)
+Range(cm)
+Bus Voltage(V)
+Current(mA)
+Power(mW)
+```
+
+## 🖥️ Example Telemetry Format
+
+The firmware prints a table similar to:
+
+```text
+Time(ms)    Temp(C)    SoundSpd(m/s)    ToF(us)    Range(cm)    Bus(V)    Cur(mA)    Pwr(mW)
+-----------------------------------------------------------------------------------------------
+...
+```
+
+The telemetry loop runs approximately every **100 ms**, corresponding to a nominal **10 Hz** reporting rate.
+
+## 🧠 Firmware Structure
+
+```text
+main()
+│
+├── Initialize GPIO0
+│
+├── Initialize I2C device
+│
+├── Configure TRIG and ECHO pins
+│
+├── Print telemetry header
+│
+└── Continuous loop
+    │
+    ├── Calculate sound speed
+    │
+    ├── Trigger JSN-SR04T
+    │
+    ├── Measure ECHO pulse width
+    │
+    ├── Calculate range
+    │
+    ├── Read INA219 telemetry
+    │
+    ├── Print telemetry
+    │
+    └── Wait 100 ms
+```
+
+## 📁 Suggested GitHub Repository Structure
+
+A simple structure for the first version is:
+
+```text
+sih-26058-sonar-auv/
+│
+├── README.md
+│
+├── src/
+│   └── main.c
+│
+├── include/
+│
+├── docs/
+│
+└── LICENSE
+```
+
+If your Zephyr project already has its own standard structure, keep that structure instead of unnecessarily changing it.
+
+## 🚀 Building the Zephyr Project
+
+Make sure your Zephyr development environment is already installed and configured.
+
+From the project directory, a typical Zephyr build command is:
+
+```bash
+west build -b nrf52840dk/nrf52840
+```
+
+To flash the board:
+
+```bash
+west flash
+```
+
+The exact board target can vary with the Zephyr version, so use the board name supported by your installed Zephyr version.
+
+## 🔬 Current Prototype Status
+
+### Implemented in the supplied firmware
+
+- nRF52840 GPIO control
+- JSN-SR04T trigger generation
+- ECHO pulse-width measurement
+- Temperature-based sound-speed calculation
+- Acoustic range calculation
+- INA219 I2C communication
+- Continuous telemetry output
+- 10 Hz telemetry loop
+
+### Important implementation notes
+
+The current source code contains a fixed temperature value:
+
+```c
+float water_temp = 24.5f;
+```
+
+Therefore, the **DS18B20 is not yet actually read by this particular source file**. The temperature value is currently being used as an environmental baseline.
+
+Similarly, the current function uses a nominal current value rather than reading the INA219 current register:
+
+```c
+*current_ma = 28.0f;
+```
+
+Therefore, the current telemetry implementation should be considered a **prototype/demo implementation**, not a complete INA219 current measurement implementation.
+
+The repository can be updated later when the DS18B20 and INA219 current-register handling are fully integrated.
+
+## 🔮 Future Improvements
+
+- Integrate real DS18B20 temperature readings.
+- Read actual INA219 current and power registers.
+- Add proper INA219 calibration for the selected shunt/configuration.
+- Add adaptive waveform generation.
+- Implement software-defined LFM/chirp generation.
+- Add waveform parameter adaptation based on environmental telemetry.
+- Add digital Hann envelope/windowing.
+- Improve acoustic signal processing and filtering.
+- Add more robust timeout and error handling.
+- Add data logging for experimental analysis.
+- Optimize power consumption for AUV operation.
+- Add a closed-loop adaptive sonar processing pipeline.
+
+## ⚠️ Potential Challenges
+
+- Underwater acoustic propagation varies with temperature and environmental conditions.
+- Ultrasonic sensor performance may differ from laboratory air measurements.
+- Echo detection can be affected by noise and reflections.
+- GPIO voltage compatibility must be checked carefully.
+- Power consumption is important for battery-operated AUVs.
+- Accurate current measurement requires proper INA219 configuration and calibration.
+- Real-time waveform generation requires careful timing and resource management.
+
+## 📚 Research Context
+
+The project presentation identifies software-defined sonar on low-power embedded hardware, adaptive transmit waveform design, digital windowing, and frequency-dependent underwater sound absorption as relevant research areas.
+
+The SIH project material references:
+
+- Zhou et al., *Software-Defined Sonar for Unmanned Underwater System*, IET Radar, Sonar & Navigation, 2025.
+- Naval Undersea Warfare Center, *Adaptive Transmit Waveform Design*, arXiv:2111.08746, 2021.
+- F. J. Harris, *On the Use of Windows for Harmonic Analysis with the DFT*, IEEE, 1978.
+- R. E. Francois and G. R. Garrison, *Sound Absorption Based on Ocean Measurements*, JASA, 1982.
+
+## 👥 Team
+
+**Team:** team blub blub  
+**SIH Problem Statement:** 26058  
+**SIH Team ID:** 182517
+
+## 📜 License
+
+Add a license appropriate for your project before publicly distributing the source code. For example, an MIT License can be used for many open-source projects.
+
+---
+
+### Project Status
+
+**Prototype / Development Stage**
+
+This repository documents the current embedded prototype and can be expanded as the adaptive sonar transmitter, environmental sensing, and power-management features are integrated.

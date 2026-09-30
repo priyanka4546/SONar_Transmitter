@@ -175,27 +175,6 @@ main()
     └── Wait 100 ms
 ```
 
-## 📁 Suggested GitHub Repository Structure
-
-A simple structure for the first version is:
-
-```text
-sih-26058-sonar-auv/
-│
-├── README.md
-│
-├── src/
-│   └── main.c
-│
-├── include/
-│
-├── docs/
-│
-└── LICENSE
-```
-
-If your Zephyr project already has its own standard structure, keep that structure instead of unnecessarily changing it.
-
 ## 🚀 Building the Zephyr Project
 
 Make sure your Zephyr development environment is already installed and configured.
@@ -289,11 +268,6 @@ The SIH project material references:
 **SIH Problem Statement:** 26058  
 **SIH Team ID:** 182517
 
-## 📜 License
-
-Add a license appropriate for your project before publicly distributing the source code. For example, an MIT License can be used for many open-source projects.
-
----
 
 ### Project Status
 

@@ -262,12 +262,6 @@ The SIH project material references:
 - F. J. Harris, *On the Use of Windows for Harmonic Analysis with the DFT*, IEEE, 1978.
 - R. E. Francois and G. R. Garrison, *Sound Absorption Based on Ocean Measurements*, JASA, 1982.
 
-## 👥 Team
-
-**Team:** team blub blub  
-**SIH Problem Statement:** 26058  
-**SIH Team ID:** 182517
-
 
 ### Project Status
 
